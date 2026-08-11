@@ -176,8 +176,8 @@ export default function Home({ ssrHost, ssrTime }) {
             <h1>
               HOYA <span className="grad">CLOUD</span>
             </h1>
-            <p className="tagline">측정할 수 없다면, 개선할 수 없다</p>
-            <p className="tagline2">대시보드는 답을 주는 것이 아니라, 질문을 던지는 것이다</p>
+            <p className="tagline">측정할 수 없다면 개선할 수 없다</p>
+            <p className="tagline2">대시보드는 답을 주는 것이 아니라 질문을 던지는 것이다</p>
             <p className="ssrProof">
               rendered by <code>{ssrHost}</code> & {ssrTime} & <b>SSR</b>
             </p>
