@@ -685,7 +685,9 @@ Resources:
   # ==========================================================
   PubAlb:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    DependsOn: [LogsBucketPolicy, RtPublicDefaultRoute]
+    # EmptyBucketsOnDelete 의존: 삭제 시 ALB가 먼저 사라진 뒤 버킷을 비워야
+    # 마지막 액세스 로그 flush가 빈 버킷을 다시 채우는 race가 없다
+    DependsOn: [LogsBucketPolicy, RtPublicDefaultRoute, EmptyBucketsOnDelete]
     Properties:
       Name: !Sub '${AWS::StackName}-pub-alb'
       Scheme: internet-facing
@@ -723,7 +725,7 @@ Resources:
 
   PriAlb:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    DependsOn: LogsBucketPolicy
+    DependsOn: [LogsBucketPolicy, EmptyBucketsOnDelete]
     Properties:
       Name: !Sub '${AWS::StackName}-pri-alb'
       Scheme: internal
@@ -849,21 +851,29 @@ Resources:
       Role: !GetAtt CleanupRole.Arn
       Code:
         ZipFile: |
+          import time
           import boto3
           import cfnresponse
+          def empty(s3, bucket):
+              try:
+                  paginator = s3.get_paginator('list_objects_v2')
+                  for page in paginator.paginate(Bucket=bucket):
+                      objs = [{'Key': o['Key']} for o in page.get('Contents', [])]
+                      if objs:
+                          s3.delete_objects(Bucket=bucket, Delete={'Objects': objs})
+              except Exception as e:
+                  print(f'skip {bucket}: {e}')
           def handler(event, context):
               try:
                   if event['RequestType'] == 'Delete':
                       s3 = boto3.client('s3')
-                      for bucket in event['ResourceProperties'].get('Buckets', []):
-                          try:
-                              paginator = s3.get_paginator('list_objects_v2')
-                              for page in paginator.paginate(Bucket=bucket):
-                                  objs = [{'Key': o['Key']} for o in page.get('Contents', [])]
-                                  if objs:
-                                      s3.delete_objects(Bucket=bucket, Delete={'Objects': objs})
-                          except Exception as e:
-                              print(f'skip {bucket}: {e}')
+                      buckets = event['ResourceProperties'].get('Buckets', [])
+                      # 2회 스윕: 늦게 도착하는 로그 flush까지 회수
+                      for b in buckets:
+                          empty(s3, b)
+                      time.sleep(20)
+                      for b in buckets:
+                          empty(s3, b)
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
               except Exception as e:
                   print(e)
