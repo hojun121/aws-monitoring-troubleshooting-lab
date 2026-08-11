@@ -1,0 +1,910 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  AWS Monitoring & Troubleshooting Lab - All-in-One Stack
+  Route: CloudFront (/assets/* -> S3, else -> pub-ALB) -> next.js EC2 -> pri-ALB -> node.js EC2 -> RDS MySQL
+  + pub-lab EC2 (L3 진단 연습용)
+  고장 4종이 주입된 채로 배포됩니다. 워크시트를 따라 하나씩 해결하세요.
+  삭제: CloudFormation 콘솔에서 Delete stack 클릭 한 번 (버킷 자동 정리 내장)
+
+# ============================================================
+# Parameters
+# ============================================================
+Parameters:
+  RepoUrl:
+    Type: String
+    Default: https://github.com/hojun121/aws-monitoring-troubleshooting-lab.git
+    Description: 앱 코드를 가져올 Git 레포 (수정 불필요)
+
+  VpcCidr:
+    Type: String
+    Default: 172.16.0.0/23
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/23$'
+    Description: VPC CIDR (/23 고정, 수정 불필요)
+
+  AzA:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: ap-northeast-2a
+    Description: 모든 리소스가 생성되는 AZ
+
+  AzC:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: ap-northeast-2c
+    Description: 서브넷 이중화용 두 번째 AZ (리소스는 생성 안 됨)
+
+  DbPassword:
+    Type: String
+    NoEcho: true
+    Default: LabPassw0rd!
+    MinLength: 12
+    Description: RDS 마스터 비밀번호 (실습용 기본값 그대로 사용 가능)
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Amazon Linux 2023 최신 AMI (수정 불필요)
+
+# ============================================================
+# Mappings - ALB 액세스 로그 전송용 ELB 서비스 계정 (리전별)
+# ============================================================
+Mappings:
+  ElbAccount:
+    ap-northeast-2: { Id: '600734575887' }
+    ap-northeast-1: { Id: '582318560864' }
+    us-east-1: { Id: '127311923021' }
+
+# ============================================================
+# Resources
+# ============================================================
+Resources:
+
+  # ==========================================================
+  # 1. VPC / IGW
+  # ==========================================================
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-vpc' }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-igw' }]
+
+  IgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # ==========================================================
+  # 2. Subnets (6종 x 2AZ = 12개, /27)
+  #    idx: 0 pub-elb-a  1 pub-elb-c  2 pub-nat-a  3 pub-nat-c
+  #         4 pub-lab-a  5 pub-lab-c  6 pri-elb-a  7 pri-elb-c
+  #         8 pri-svc-a  9 pri-svc-c 10 pri-db-a  11 pri-db-c
+  # ==========================================================
+  PubElbA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzA
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pub-elb-a' }]
+  PubElbC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzC
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pub-elb-c' }]
+  PubNatA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzA
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pub-nat-a' }]
+  PubNatC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzC
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pub-nat-c' }]
+  PubLabA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [4, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzA
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pub-lab-a' }]
+  PubLabC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [5, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzC
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pub-lab-c' }]
+  PriElbA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [6, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzA
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pri-elb-a' }]
+  PriElbC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [7, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzC
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pri-elb-c' }]
+  PriSvcA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [8, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzA
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pri-svc-a' }]
+  PriSvcC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [9, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzC
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pri-svc-c' }]
+  PriDbA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [10, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzA
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pri-db-a' }]
+  PriDbC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [11, !Cidr [!Ref VpcCidr, 16, 5]]
+      AvailabilityZone: !Ref AzC
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pri-db-c' }]
+
+  # ==========================================================
+  # 3. NAT Gateway (AZ-a 1개)
+  # ==========================================================
+  EipNat:
+    Type: AWS::EC2::EIP
+    DependsOn: IgwAttachment
+    Properties:
+      Domain: vpc
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-eip-nat' }]
+
+  Nat:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EipNat.AllocationId
+      SubnetId: !Ref PubNatA
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-nat' }]
+
+  # ==========================================================
+  # 4. Route Tables
+  #    rt-lab 에는 의도적으로 0.0.0.0/0 경로가 없다  <-- [시나리오 1]
+  # ==========================================================
+  RtPublic:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-rt-public' }]
+  RtPublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IgwAttachment
+    Properties:
+      RouteTableId: !Ref RtPublic
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  AssocPubElbA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtPublic, SubnetId: !Ref PubElbA }
+  AssocPubElbC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtPublic, SubnetId: !Ref PubElbC }
+  AssocPubNatA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtPublic, SubnetId: !Ref PubNatA }
+  AssocPubNatC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtPublic, SubnetId: !Ref PubNatC }
+
+  RtLab:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-rt-lab' }]
+  AssocPubLabA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtLab, SubnetId: !Ref PubLabA }
+  AssocPubLabC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtLab, SubnetId: !Ref PubLabC }
+
+  RtPrivate:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-rt-private' }]
+  RtPrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RtPrivate
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref Nat
+  AssocPriElbA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtPrivate, SubnetId: !Ref PriElbA }
+  AssocPriElbC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtPrivate, SubnetId: !Ref PriElbC }
+  AssocPriSvcA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtPrivate, SubnetId: !Ref PriSvcA }
+  AssocPriSvcC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtPrivate, SubnetId: !Ref PriSvcC }
+
+  RtDb:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-rt-db' }]
+  AssocPriDbA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtDb, SubnetId: !Ref PriDbA }
+  AssocPriDbC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { RouteTableId: !Ref RtDb, SubnetId: !Ref PriDbC }
+
+  # ==========================================================
+  # 5. Security Groups (SG 체이닝)
+  #    ApiSg 에는 의도적으로 3000 인바운드가 없다  <-- [시나리오 2]
+  # ==========================================================
+  AlbPublicSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: public ALB - HTTP from internet (CloudFront)
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-sg-pub-alb' }]
+
+  FrontendSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: frontend (next.js) - 3000 from public ALB only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 3000, ToPort: 3000, SourceSecurityGroupId: !Ref AlbPublicSg }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-sg-frontend' }]
+
+  AlbInternalSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: internal ALB - 80 from frontend only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, SourceSecurityGroupId: !Ref FrontendSg }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-sg-pri-alb' }]
+
+  ApiSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: api (node.js) - something is missing here. find it.
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-sg-api' }]
+
+  DbSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS - 3306 from api only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 3306, ToPort: 3306, SourceSecurityGroupId: !Ref ApiSg }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-sg-db' }]
+
+  LabSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: pub-lab EC2 - ICMP + HTTP from anywhere
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: icmp, FromPort: -1, ToPort: -1, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-sg-lab' }]
+
+  # ==========================================================
+  # 6. IAM (SSM + CloudWatch Agent + 에셋 업로드)
+  # ==========================================================
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: assets-upload
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:ListBucket]
+                Resource:
+                  - !GetAtt AssetsBucket.Arn
+                  - !Sub '${AssetsBucket.Arn}/*'
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-ec2-role' }]
+
+  Ec2Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref Ec2Role]
+
+  # ==========================================================
+  # 7. S3 (정적 에셋 + ALB 액세스 로그)
+  # ==========================================================
+  AssetsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-assets-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  AssetsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AssetsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub '${AssetsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-alblogs-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  LogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowElbLogDelivery
+            Effect: Allow
+            Principal:
+              AWS: !Sub
+                - 'arn:aws:iam::${ElbId}:root'
+                - ElbId: !FindInMap [ElbAccount, !Ref 'AWS::Region', Id]
+            Action: s3:PutObject
+            Resource: !Sub '${LogsBucket.Arn}/*'
+
+  # ==========================================================
+  # 8. CloudWatch Log Groups (스택과 함께 삭제되도록 명시 정의)
+  # ==========================================================
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/lab/${AWS::StackName}/vpc-flow-logs'
+      RetentionInDays: 7
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/lab/${AWS::StackName}/api'
+      RetentionInDays: 7
+  FrontendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/lab/${AWS::StackName}/frontend'
+      RetentionInDays: 7
+  CleanupLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-empty-buckets'
+      RetentionInDays: 7
+
+  # ==========================================================
+  # 9. VPC Flow Logs (1분 집계 - 수업 중 빠른 확인)
+  # ==========================================================
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: vpc-flow-logs.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: flowlogs-to-cwl
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents, logs:DescribeLogGroups, logs:DescribeLogStreams]
+                Resource: !GetAtt FlowLogGroup.Arn
+
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceType: VPC
+      ResourceId: !Ref Vpc
+      TrafficType: ALL
+      MaxAggregationInterval: 60
+      LogGroupName: !Ref FlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-flowlog' }]
+
+  # ==========================================================
+  # 10. RDS MySQL (단일 인스턴스)
+  # ==========================================================
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: lab db subnets
+      SubnetIds: [!Ref PriDbA, !Ref PriDbC]
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-db-subnets' }]
+
+  Db:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub '${AWS::StackName}-mysql'
+      Engine: mysql
+      EngineVersion: '8.0.43'
+      DBInstanceClass: db.t4g.micro
+      AllocatedStorage: '20'
+      StorageType: gp3
+      DBName: labdb
+      MasterUsername: labadmin
+      MasterUserPassword: !Ref DbPassword
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups: [!Ref DbSg]
+      AvailabilityZone: !Ref AzA
+      MultiAZ: false
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 0
+      DeletionProtection: false
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-mysql' }]
+
+  # ==========================================================
+  # 11. EC2 - pub-lab (L3 진단 과녁)
+  #     rt-lab 고장 때문에 부팅 직후엔 인터넷이 안 된다.
+  #     self-heal 루프: 학생이 라우팅을 고치면 nginx가 스스로 설치된다.
+  # ==========================================================
+  LabInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      SubnetId: !Ref PubLabA
+      SecurityGroupIds: [!Ref LabSg]
+      IamInstanceProfile: !Ref Ec2Profile
+      MetadataOptions: { HttpTokens: required }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-pub-lab' }]
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          exec > /var/log/userdata.log 2>&1
+          set -x
+          cat <<'EOF' > /usr/local/bin/lab-selfheal.sh
+          #!/bin/bash
+          # 인터넷이 뚫릴 때까지 대기 -> 뚫리면 nginx 설치 (라우팅 수리 성공의 증거)
+          until curl -s --max-time 5 https://aws.amazon.com > /dev/null; do sleep 15; done
+          dnf install -y nginx
+          cat <<'HTML' > /usr/share/nginx/html/index.html
+          <html><body style="background:#05070f;color:#00e0c6;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh">
+          <h1>L3 FIXED — pub-lab is alive. 라우팅을 고친 순간 이 서버는 스스로 살아났습니다.</h1>
+          </body></html>
+          HTML
+          systemctl enable --now nginx
+          EOF
+          chmod +x /usr/local/bin/lab-selfheal.sh
+          nohup /usr/local/bin/lab-selfheal.sh >> /var/log/lab-selfheal.log 2>&1 &
+
+  # ==========================================================
+  # 12. EC2 - frontend (next.js SSR)
+  # ==========================================================
+  FrontendInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: [RtPrivateDefaultRoute, AssocPriSvcA]
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      SubnetId: !Ref PriSvcA
+      SecurityGroupIds: [!Ref FrontendSg]
+      IamInstanceProfile: !Ref Ec2Profile
+      MetadataOptions: { HttpTokens: required }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-frontend' }]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          exec > /var/log/userdata.log 2>&1
+          set -x
+          # swap (t3.micro 메모리 여유 확보)
+          dd if=/dev/zero of=/swapfile bs=1M count=1024 && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+          # NAT 준비 대기 겸 재시도 루프
+          for i in $(seq 1 30); do dnf install -y git nodejs amazon-cloudwatch-agent && break || sleep 10; done
+          for i in $(seq 1 10); do git clone --depth 1 ${RepoUrl} /opt/lab && break || sleep 10; done
+          cd /opt/lab/apps/frontend
+          cp -r public .next/standalone/
+          cp -r .next/static .next/standalone/.next/
+          # 정적 에셋을 S3로 (CloudFront /assets/* 오리진)
+          aws s3 cp --recursive public/assets s3://${AssetsBucket}/assets/
+          # systemd 서비스
+          cat <<'EOF' > /etc/systemd/system/lab-frontend.service
+          [Unit]
+          Description=Lab Frontend (next.js SSR)
+          After=network.target
+          [Service]
+          Environment=NODE_ENV=production
+          Environment=PORT=3000
+          Environment=HOSTNAME=0.0.0.0
+          Environment=API_ORIGIN=__API_ORIGIN__
+          WorkingDirectory=/opt/lab/apps/frontend/.next/standalone
+          ExecStart=/usr/bin/node server.js
+          Restart=always
+          RestartSec=3
+          StandardOutput=append:/var/log/lab-frontend.log
+          StandardError=append:/var/log/lab-frontend.log
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          sed -i "s/__API_ORIGIN__/${PriAlb.DNSName}/" /etc/systemd/system/lab-frontend.service
+          systemctl daemon-reload && systemctl enable --now lab-frontend
+          # CloudWatch Agent (메모리/디스크 + 앱 로그)
+          cat <<'EOF' > /opt/cw.json
+          {
+            "metrics": {
+              "namespace": "Lab/EC2",
+              "append_dimensions": { "InstanceId": "${!aws:InstanceId}" },
+              "metrics_collected": {
+                "mem": { "measurement": ["mem_used_percent"] },
+                "disk": { "measurement": ["used_percent"], "resources": ["/"] }
+              }
+            },
+            "logs": {
+              "logs_collected": { "files": { "collect_list": [
+                { "file_path": "/var/log/lab-frontend.log",
+                  "log_group_name": "__LOG_GROUP__",
+                  "log_stream_name": "{instance_id}" }
+              ] } }
+            }
+          }
+          EOF
+          sed -i "s|__LOG_GROUP__|/lab/${AWS::StackName}/frontend|" /opt/cw.json
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/cw.json -s
+
+  # ==========================================================
+  # 13. EC2 - api (node.js Express)
+  #     PORT=3001 로 기동된다. Target Group은 3000을 기대한다. <-- [시나리오 3]
+  # ==========================================================
+  ApiInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: [RtPrivateDefaultRoute, AssocPriSvcA]
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.micro
+      SubnetId: !Ref PriSvcA
+      SecurityGroupIds: [!Ref ApiSg]
+      IamInstanceProfile: !Ref Ec2Profile
+      MetadataOptions: { HttpTokens: required }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-api' }]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          exec > /var/log/userdata.log 2>&1
+          set -x
+          for i in $(seq 1 30); do dnf install -y git nodejs amazon-cloudwatch-agent && break || sleep 10; done
+          for i in $(seq 1 10); do git clone --depth 1 ${RepoUrl} /opt/lab && break || sleep 10; done
+          # systemd 서비스 (PORT 값에 주목 - 여기가 시나리오 3의 무대다)
+          cat <<'EOF' > /etc/systemd/system/lab-api.service
+          [Unit]
+          Description=Lab API (node.js Express)
+          After=network.target
+          [Service]
+          Environment=NODE_ENV=production
+          Environment=PORT=3001
+          Environment=DB_HOST=__DB_HOST__
+          Environment=DB_USER=labadmin
+          Environment=DB_PASSWORD=__DB_PASSWORD__
+          Environment=DB_NAME=labdb
+          WorkingDirectory=/opt/lab/apps/api
+          ExecStart=/usr/bin/node server.js
+          Restart=always
+          RestartSec=3
+          StandardOutput=append:/var/log/lab-api.log
+          StandardError=append:/var/log/lab-api.log
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          sed -i "s/__DB_HOST__/${Db.Endpoint.Address}/" /etc/systemd/system/lab-api.service
+          sed -i "s/__DB_PASSWORD__/${DbPassword}/" /etc/systemd/system/lab-api.service
+          systemctl daemon-reload && systemctl enable --now lab-api
+          # CloudWatch Agent
+          cat <<'EOF' > /opt/cw.json
+          {
+            "metrics": {
+              "namespace": "Lab/EC2",
+              "append_dimensions": { "InstanceId": "${!aws:InstanceId}" },
+              "metrics_collected": {
+                "mem": { "measurement": ["mem_used_percent"] },
+                "disk": { "measurement": ["used_percent"], "resources": ["/"] }
+              }
+            },
+            "logs": {
+              "logs_collected": { "files": { "collect_list": [
+                { "file_path": "/var/log/lab-api.log",
+                  "log_group_name": "__LOG_GROUP__",
+                  "log_stream_name": "{instance_id}" }
+              ] } }
+            }
+          }
+          EOF
+          sed -i "s|__LOG_GROUP__|/lab/${AWS::StackName}/api|" /opt/cw.json
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/cw.json -s
+
+  # ==========================================================
+  # 14. ALB (public + internal)
+  # ==========================================================
+  PubAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: [LogsBucketPolicy, RtPublicDefaultRoute]
+    Properties:
+      Name: !Sub '${AWS::StackName}-pub-alb'
+      Scheme: internet-facing
+      Type: application
+      Subnets: [!Ref PubElbA, !Ref PubElbC]
+      SecurityGroups: [!Ref AlbPublicSg]
+      LoadBalancerAttributes:
+        - { Key: access_logs.s3.enabled, Value: 'true' }
+        - { Key: access_logs.s3.bucket, Value: !Ref LogsBucket }
+        - { Key: access_logs.s3.prefix, Value: alb-pub }
+        - { Key: idle_timeout.timeout_seconds, Value: '30' }
+
+  FrontTg:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${AWS::StackName}-front-tg'
+      VpcId: !Ref Vpc
+      Protocol: HTTP
+      Port: 3000
+      TargetType: instance
+      Targets: [{ Id: !Ref FrontendInstance, Port: 3000 }]
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  PubListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref PubAlb
+      Protocol: HTTP
+      Port: 80
+      DefaultActions: [{ Type: forward, TargetGroupArn: !Ref FrontTg }]
+
+  PriAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: LogsBucketPolicy
+    Properties:
+      Name: !Sub '${AWS::StackName}-pri-alb'
+      Scheme: internal
+      Type: application
+      Subnets: [!Ref PriElbA, !Ref PriElbC]
+      SecurityGroups: [!Ref AlbInternalSg]
+      LoadBalancerAttributes:
+        - { Key: access_logs.s3.enabled, Value: 'true' }
+        - { Key: access_logs.s3.bucket, Value: !Ref LogsBucket }
+        - { Key: access_logs.s3.prefix, Value: alb-pri }
+        - { Key: idle_timeout.timeout_seconds, Value: '30' }
+
+  ApiTg:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${AWS::StackName}-api-tg'
+      VpcId: !Ref Vpc
+      Protocol: HTTP
+      Port: 3000
+      TargetType: instance
+      Targets: [{ Id: !Ref ApiInstance, Port: 3000 }]
+      HealthCheckPath: /api/health
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  PriListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref PriAlb
+      Protocol: HTTP
+      Port: 80
+      DefaultActions: [{ Type: forward, TargetGroupArn: !Ref ApiTg }]
+
+  # ==========================================================
+  # 15. CloudFront (/assets/* -> S3, 그 외 -> pub-ALB)
+  # ==========================================================
+  Oac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${AWS::StackName} lab distribution'
+        PriceClass: PriceClass_200
+        HttpVersion: http2
+        Origins:
+          - Id: alb-origin
+            DomainName: !GetAtt PubAlb.DNSName
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
+          - Id: s3-assets
+            DomainName: !GetAtt AssetsBucket.RegionalDomainName
+            S3OriginConfig: { OriginAccessIdentity: '' }
+            OriginAccessControlId: !Ref Oac
+        DefaultCacheBehavior:
+          TargetOriginId: alb-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # CachingDisabled
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # AllViewerExceptHostHeader
+        CacheBehaviors:
+          - PathPattern: '/assets/*'
+            TargetOriginId: s3-assets
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6        # CachingOptimized
+          - PathPattern: '/api/*'
+            TargetOriginId: alb-origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad        # CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+  # ==========================================================
+  # 16. 스택 삭제 시 S3 버킷 자동 비우기 (VPC 밖 Lambda)
+  # ==========================================================
+  CleanupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: empty-buckets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:ListBucket, s3:DeleteObject]
+                Resource:
+                  - !GetAtt AssetsBucket.Arn
+                  - !Sub '${AssetsBucket.Arn}/*'
+                  - !GetAtt LogsBucket.Arn
+                  - !Sub '${LogsBucket.Arn}/*'
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt CleanupLambdaLogGroup.Arn
+
+  CleanupFn:
+    Type: AWS::Lambda::Function
+    DependsOn: CleanupLambdaLogGroup
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-empty-buckets'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 300
+      MemorySize: 128
+      Role: !GetAtt CleanupRole.Arn
+      Code:
+        ZipFile: |
+          import boto3, cfnresponse
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      s3 = boto3.client('s3')
+                      for bucket in event['ResourceProperties'].get('Buckets', []):
+                          try:
+                              paginator = s3.get_paginator('list_objects_v2')
+                              for page in paginator.paginate(Bucket=bucket):
+                                  objs = [{'Key': o['Key']} for o in page.get('Contents', [])]
+                                  if objs:
+                                      s3.delete_objects(Bucket=bucket, Delete={'Objects': objs})
+                          except Exception as e:
+                              print(f'skip {bucket}: {e}')
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(e)
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {'note': str(e)})
+
+  EmptyBucketsOnDelete:
+    Type: Custom::EmptyBuckets
+    Properties:
+      ServiceToken: !GetAtt CleanupFn.Arn
+      Buckets: [!Ref AssetsBucket, !Ref LogsBucket]
+
+# ============================================================
+# Outputs - 실습 안내판
+# ============================================================
+Outputs:
+  1StartHere:
+    Description: 실습 시작점
+    Value: !Sub 'https://${Distribution.DomainName} 를 브라우저에서 여세요. 화면은 뜨지만 어딘가 고장나 있습니다. 워크시트 1번부터.'
+  CloudFrontURL:
+    Description: 서비스 주소 (HTTPS)
+    Value: !Sub 'https://${Distribution.DomainName}'
+  LabInstanceId:
+    Description: '[시나리오 1] pub-lab EC2 (ping 과녁)'
+    Value: !Ref LabInstance
+  LabInstancePublicIp:
+    Description: '[시나리오 1] pub-lab 퍼블릭 IP - ping을 쳐보세요'
+    Value: !GetAtt LabInstance.PublicIp
+  FrontendInstanceId:
+    Description: frontend EC2 (SSM 접속용)
+    Value: !Ref FrontendInstance
+  ApiInstanceId:
+    Description: api EC2 (SSM 접속용)
+    Value: !Ref ApiInstance
+  PriAlbDns:
+    Description: 내부 ALB DNS (포트포워딩 대상)
+    Value: !GetAtt PriAlb.DNSName
+  RdsEndpoint:
+    Description: RDS 엔드포인트 (포트포워딩 대상)
+    Value: !GetAtt Db.Endpoint.Address
+  FlowLogGroupName:
+    Description: VPC Flow Logs 로그 그룹
+    Value: !Ref FlowLogGroup
+  AlbLogsBucket:
+    Description: ALB 액세스 로그 버킷
+    Value: !Ref LogsBucket
