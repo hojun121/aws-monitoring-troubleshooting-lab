@@ -19,6 +19,15 @@
 4. Stack name: `monitoring-lab` → 파라미터 기본값 그대로 → Next → Next
 5. IAM 체크박스 체크 → **Submit**
 
+## 한 계정에 여러 스택?
+
+가능합니다. 모든 리소스가 스택 이름 프리픽스로 격리되어 있어 **스택 이름만 다르게** 주면 됩니다.
+
+- 스택 이름은 **24자 이하 영소문자** (ALB 이름 32자 제한 때문)
+- 계정 기본 쿼터(VPC 5개 & EIP 5개) 기준 실질 **최대 4개**
+- ⚠️ 새 계정은 EC2 온디맨드 vCPU 한도가 낮을 수 있습니다. Service Quotas에서
+  "Running On-Demand Standard instances" 가 **8 이상**인지 미리 확인하세요 (스택 1개당 6 vCPU 사용)
+
 ## 배포 중 (약 20분)
 
 - Events 탭에서 리소스가 순서대로 생성되는 걸 볼 수 있습니다 (VPC → RDS → EC2 → ALB → CloudFront)
