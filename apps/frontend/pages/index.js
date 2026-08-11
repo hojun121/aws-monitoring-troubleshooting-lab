@@ -4,12 +4,20 @@ import os from 'os';
 
 export async function getServerSideProps() {
   // 이 블록은 next.js EC2에서 실행된다 : API 체인이 전부 죽어도 히어로는 뜬다.
+  // 시각은 KST(UTC+9), "YYYY-MM-DD HH:mm:ss" 형태로 표기한다.
+  const kst = new Date(Date.now() + 9 * 3600 * 1000);
   return {
     props: {
       ssrHost: os.hostname(),
-      ssrTime: new Date().toISOString(),
+      ssrTime: kst.toISOString().replace('T', ' ').slice(0, 19),
     },
   };
+}
+
+function fmtKst(dateLike) {
+  const d = new Date(dateLike);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 const MAX_LOG = 20;
@@ -281,7 +289,7 @@ export default function Home({ ssrHost, ssrTime }) {
               <div key={m.id} className="msg">
                 <span className="author">{m.author}</span>
                 <span className="content">{m.content}</span>
-                <span className="when">{new Date(m.created_at).toLocaleString('ko-KR', { hour12: false })}</span>
+                <span className="when">{fmtKst(m.created_at)}</span>
               </div>
             ))}
           </div>
