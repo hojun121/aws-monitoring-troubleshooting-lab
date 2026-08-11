@@ -31,7 +31,7 @@ aws sts get-caller-identity
 
 ## Session Manager Plugin 설치
 
-SSM으로 셸 접속·포트포워딩을 하려면 CLI와 **별도로** 이 플러그인이 필요합니다.
+SSM으로 셸 접속 & 포트포워딩을 하려면 CLI와 **별도로** 이 플러그인이 필요합니다.
 
 - **Windows**: https://s3.amazonaws.com/session-manager-downloads/plugin/latest/windows/SessionManagerPluginSetup.exe
 - **macOS**: `brew install --cask session-manager-plugin`

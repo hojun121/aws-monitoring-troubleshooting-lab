@@ -3,7 +3,7 @@ import Head from 'next/head';
 import os from 'os';
 
 export async function getServerSideProps() {
-  // 이 블록은 next.js EC2에서 실행된다 — API 체인이 전부 죽어도 히어로는 뜬다.
+  // 이 블록은 next.js EC2에서 실행된다 : API 체인이 전부 죽어도 히어로는 뜬다.
   return {
     props: {
       ssrHost: os.hostname(),
@@ -36,7 +36,7 @@ function useApiCall(pushLog) {
 }
 
 function LatencyBadge({ ms, status }) {
-  if (ms == null) return <span className="badge idle">—</span>;
+  if (ms == null) return <span className="badge idle">-</span>;
   const cls = status === 'ERR' || status >= 500 ? 'bad' : ms >= 1000 ? 'slow' : ms >= 300 ? 'warn' : 'good';
   return <span className={`badge ${cls}`}>{ms}ms</span>;
 }
@@ -150,7 +150,7 @@ export default function Home({ ssrHost, ssrTime }) {
   return (
     <>
       <Head>
-        <title>HOYA CLOUD · Mission Control</title>
+        <title>HOYA CLOUD & Mission Control</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/assets/logo.svg" />
       </Head>
@@ -160,7 +160,7 @@ export default function Home({ ssrHost, ssrTime }) {
       </div>
 
       <main>
-        {/* ============ HERO (SSR — API가 죽어도 항상 렌더링) ============ */}
+        {/* ============ HERO (SSR : API가 죽어도 항상 렌더링) ============ */}
         <section className="hero">
           <HexMesh />
           <div className="heroInner">
@@ -168,9 +168,9 @@ export default function Home({ ssrHost, ssrTime }) {
             <h1>
               HOYA <span className="grad">CLOUD</span>
             </h1>
-            <p className="tagline">Mission Control — 패킷의 여정을 관제한다</p>
+            <p className="tagline">Mission Control : 패킷의 여정을 관제한다</p>
             <p className="ssrProof">
-              rendered by <code>{ssrHost}</code> · {ssrTime} · <b>SSR</b>
+              rendered by <code>{ssrHost}</code> & {ssrTime} & <b>SSR</b>
             </p>
             <div className="chainMap">
               <span>CloudFront</span><i>→</i>
@@ -187,7 +187,7 @@ export default function Home({ ssrHost, ssrTime }) {
         {/* ============ 라이브 상태 패널 ============ */}
         <section className="panel">
           <h2><span className="grad">LIVE</span> STATUS</h2>
-          <p className="sub">5초마다 내부 API 체인을 호출합니다 — 응답 시간과 상태코드를 그대로 보여줍니다</p>
+          <p className="sub">5초마다 내부 API 체인을 호출합니다 : 응답 시간과 상태코드를 그대로 보여줍니다</p>
 
           <div className="cards">
             <div className={`card ${chainState}`}>
@@ -199,7 +199,7 @@ export default function Home({ ssrHost, ssrTime }) {
                 <StatusDot state={chainState} />
                 {chainState === 'wait' ? '확인 중…' : chainState === 'ok' ? 'OPERATIONAL' : `DOWN (${health.status})`}
               </div>
-              <footer>/api/health · next.js → pri-ALB → node.js</footer>
+              <footer>/api/health & next.js → pri-ALB → node.js</footer>
             </div>
 
             <div className={`card ${health.db === 'connected' ? 'ok' : chainState === 'down' ? 'down' : 'wait'}`}>
@@ -208,7 +208,7 @@ export default function Home({ ssrHost, ssrTime }) {
                 <StatusDot state={health.db === 'connected' ? 'ok' : chainState === 'down' ? 'down' : 'wait'} />
                 {health.db === 'connected' ? 'CONNECTED' : chainState === 'down' ? 'UNREACHABLE' : '확인 중…'}
               </div>
-              <footer>RDS MySQL · node.js가 보고하는 연결 상태</footer>
+              <footer>RDS MySQL & node.js가 보고하는 연결 상태</footer>
             </div>
 
             <div className={`card ${meta ? 'ok' : 'wait'}`}>
@@ -219,21 +219,21 @@ export default function Home({ ssrHost, ssrTime }) {
               {meta ? (
                 <ul className="kv">
                   <li><b>host</b>{meta.hostname}</li>
-                  <li><b>ip</b>{meta.privateIp || '—'}</li>
-                  <li><b>az</b>{meta.az || '—'}</li>
+                  <li><b>ip</b>{meta.privateIp || '-'}</li>
+                  <li><b>az</b>{meta.az || '-'}</li>
                   <li><b>port</b>{meta.port}</li>
                 </ul>
               ) : (
                 <div className="big"><StatusDot state="wait" />응답 대기…</div>
               )}
-              <footer>/api/meta · 응답한 node.js 서버의 정체</footer>
+              <footer>/api/meta & 응답한 node.js 서버의 정체</footer>
             </div>
           </div>
 
           <div className="trafficLog">
             <header>
               <h3>TRAFFIC LOG</h3>
-              <span className="sub">최근 {MAX_LOG}건 — ALB 액세스 로그의 미리보기</span>
+              <span className="sub">최근 {MAX_LOG}건 : ALB 액세스 로그의 미리보기</span>
             </header>
             <div className="rows">
               {calls.length === 0 && <div className="row empty">아직 호출 없음</div>}
@@ -274,7 +274,7 @@ export default function Home({ ssrHost, ssrTime }) {
             {messages === null && msgError === null && <div className="msgEmpty">불러오는 중…</div>}
             {msgError !== null && (
               <div className="msgEmpty bad">
-                메시지를 불러오지 못했습니다 (status: {String(msgError)}) — 체인 어딘가가 끊겨 있습니다
+                메시지를 불러오지 못했습니다 (status: {String(msgError)}) : 체인 어딘가가 끊겨 있습니다
               </div>
             )}
             {Array.isArray(messages) && messages.map((m) => (
@@ -288,7 +288,7 @@ export default function Home({ ssrHost, ssrTime }) {
         </section>
 
         <footer className="pageFoot">
-          AWS Monitoring &amp; Troubleshooting Lab · 이 화면 자체가 실습 계기판입니다
+          AWS Monitoring &amp; Troubleshooting Lab & 이 화면 자체가 실습 계기판입니다
         </footer>
       </main>
     </>

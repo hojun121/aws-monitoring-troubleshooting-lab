@@ -1,4 +1,4 @@
-# 해답 3 — L7 ⚠️ 스포일러
+# 해답 3 : L7 ⚠️ 스포일러
 
 ## 원인
 
@@ -24,6 +24,6 @@ curl -i localhost:3000/api/health     # {"status":"ok","db":"connected"}
 
 ## 교훈
 
-- 인프라가 완벽해도 **앱 설정 한 줄**이 서비스를 죽인다 — L7 문제는 서버 안에서 잡는다
-- 진단 3종 세트: `ss -lntp`(누가 어디서 듣나) · `curl localhost`(서버 입장에서 확인) · `systemctl cat`(설정의 출처 추적)
+- 인프라가 완벽해도 **앱 설정 한 줄**이 서비스를 죽인다 : L7 문제는 서버 안에서 잡는다
+- 진단 3종 세트: `ss -lntp`(누가 어디서 듣나) & `curl localhost`(서버 입장에서 확인) & `systemctl cat`(설정의 출처 추적)
 - ALB 액세스 로그의 `elb_status_code` vs `target_status_code` 가 책임 소재를 가른다

@@ -530,7 +530,7 @@ Resources:
           dnf install -y nginx
           cat <<'HTML' > /usr/share/nginx/html/index.html
           <html><body style="background:#05070f;color:#00e0c6;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh">
-          <h1>L3 FIXED — pub-lab is alive. 라우팅을 고친 순간 이 서버는 스스로 살아났습니다.</h1>
+          <h1>L3 FIXED : pub-lab is alive. 라우팅을 고친 순간 이 서버는 스스로 살아났습니다.</h1>
           </body></html>
           HTML
           systemctl enable --now nginx

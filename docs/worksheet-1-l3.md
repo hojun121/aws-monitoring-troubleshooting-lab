@@ -1,4 +1,4 @@
-# 워크시트 1 — L3: 응답 없는 서버
+# 워크시트 1 : L3: 응답 없는 서버
 
 ## 증상
 
@@ -12,8 +12,8 @@ ping <LabInstancePublicIp>        # 100% loss
 
 ## 진단 순서 (낮은 계층부터)
 
-1. **ping** — IP까지 도달하는가? → 실패. L3부터 막혔다는 신호
-2. **traceroute** (Windows: `tracert`) — 어디까지 가는가?
+1. **ping** : IP까지 도달하는가? → 실패. L3부터 막혔다는 신호
+2. **traceroute** (Windows: `tracert`) : 어디까지 가는가?
    ```bash
    traceroute <LabInstancePublicIp>
    ```
@@ -27,12 +27,11 @@ ping <LabInstancePublicIp>        # 100% loss
 
 > **새 리소스를 만들지 말고, 기존 것을 수정하세요.** (라우팅 테이블에 규칙 추가)
 
-## 고쳤다면 — 확인
+## 고쳤다면 : 확인
 
 - `ping` 이 응답하기 시작한다
 - 1~2분 내 Fleet Manager 에서 **Connected** 로 바뀐다 (SSM 에이전트가 스스로 재접속)
-- 2~3분 내 `http://<LabInstancePublicIp>/` 를 열면 **"L3 FIXED"** 페이지가 뜬다
-  — 인터넷이 뚫리는 순간 서버가 스스로 웹서버를 설치하도록 되어 있습니다
+- 2~3분 내 `http://<LabInstancePublicIp>/` 를 열면 **"L3 FIXED"** 페이지가 뜬다 : 인터넷이 뚫리는 순간 서버가 스스로 웹서버를 설치하도록 되어 있습니다
 
 ## 모니터링 데이터에서 흔적 찾기
 
