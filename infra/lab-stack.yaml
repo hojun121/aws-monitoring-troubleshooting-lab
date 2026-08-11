@@ -849,7 +849,8 @@ Resources:
       Role: !GetAtt CleanupRole.Arn
       Code:
         ZipFile: |
-          import boto3, cfnresponse
+          import boto3
+          import cfnresponse
           def handler(event, context):
               try:
                   if event['RequestType'] == 'Delete':
